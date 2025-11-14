@@ -1,0 +1,1 @@
+Namespace(sh_degree=0, source_path='/home/HJT/WRF-GSplus', model_path='./output/20251113_083627', images='images', depths='', resolution=-1, white_background=False, train_test_exp=False, data_device='cuda', eval=False)
