@@ -15,6 +15,7 @@ from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotati
 from torch import nn
 import os
 import json
+import scipy.io as sio
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
@@ -156,11 +157,31 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     
-    def gaussian_init(self):
-        # Reduced from 200000 to 10000 to save GPU memory
-        fused_point_cloud = torch.randn((10000,3)).float().cuda()
-        fused_point_cloud = (fused_point_cloud*20)
-        fused_color = RGB2SH(torch.rand((10000,3)).float().cuda())
+    def gaussian_init(self, vertices_path=None):
+        """Initialise Gaussians using lidar vertices when available."""
+        target_gaussians = 50_000
+        fused_point_cloud = None
+
+        if vertices_path is not None and os.path.exists(vertices_path):
+            try:
+                vertices = sio.loadmat(vertices_path).get("vertices", None)
+                if vertices is not None and vertices.size > 0:
+                    base_points = torch.tensor(vertices, dtype=torch.float32, device="cuda")
+                    base_count = base_points.shape[0]
+                    if base_count >= target_gaussians:
+                        fused_point_cloud = base_points[:target_gaussians]
+                    else:
+                        repeat_idx = torch.randint(0, base_count, (target_gaussians,), device="cuda")
+                        jitter = torch.randn((target_gaussians, 3), device="cuda") * 0.01
+                        fused_point_cloud = base_points[repeat_idx] + jitter
+            except Exception as exc:  # fallback to random if loading fails
+                print(f"Failed to load vertices from {vertices_path}, fallback to random init. Error: {exc}")
+                fused_point_cloud = None
+
+        if fused_point_cloud is None:
+            fused_point_cloud = torch.randn((target_gaussians,3), device="cuda").float() * 20
+
+        fused_color = RGB2SH(torch.rand((fused_point_cloud.shape[0],3)).float().cuda())
 
 
         

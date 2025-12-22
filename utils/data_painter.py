@@ -54,6 +54,25 @@ def paint_spectrum_compare(pred_spectrum, gt_spectrum, save_path=None):
     plt.close()
 
 
+def paint_magnitude_compare(pred_magnitude, gt_magnitude, save_path=None):
+    """Save top=GT, bottom=prediction heatmap for 4x16 magnitude."""
+    vmin = min(pred_magnitude.min(), gt_magnitude.min())
+    vmax = max(pred_magnitude.max(), gt_magnitude.max())
+
+    fig, axs = plt.subplots(2, 1, figsize=(6, 4))
+    axs[0].imshow(gt_magnitude, cmap='viridis', aspect='auto', vmin=vmin, vmax=vmax)
+    axs[0].set_title('Ground Truth')
+    axs[0].axis('off')
+
+    axs[1].imshow(pred_magnitude, cmap='viridis', aspect='auto', vmin=vmin, vmax=vmax)
+    axs[1].set_title('Predicted')
+    axs[1].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
 def paint_location(loc_path, save_path):
 
 

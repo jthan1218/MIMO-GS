@@ -1,0 +1,1 @@
+Namespace(sh_degree=0, source_path='/home/HJT/MIMOGS2', model_path='./outputs/20251222_061656', images='images', depths='', resolution=-1, white_background=False, train_test_exp=False, data_device='cuda', eval=False)

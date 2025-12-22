@@ -4,6 +4,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
+  - cudatoolkit=11.6
   - plyfile
   - python=3.8.20
   - pip=24.2

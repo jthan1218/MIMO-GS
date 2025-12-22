@@ -35,24 +35,17 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.batch_size = 1
-        self.datadir = "./dataset/asu_campus_3p5" # Choose the dataset directory  
+        self.datadir = os.path.abspath("./dataset/asu_campus_3p5")
         self.cameras_extent = 2
+        self.output_height = 4
+        self.output_width = 16
+        self.num_epochs = 2
         
-        # Try to load gateway_info.yml from new location, fallback to old location
         yaml_file_path = os.path.join(self.datadir, 'gateway_info.yml')
-        if not os.path.exists(yaml_file_path):
-            yaml_file_path = os.path.join("./data_test200", 'gateway_info.yml')
-        
-        if os.path.exists(yaml_file_path):
-            with open(yaml_file_path, 'r') as file:
-                data = yaml.safe_load(file)
-            self.r_o = data['gateway1']['position']
-            self.gateway_orientation = data['gateway1']['orientation']
-        else:
-            # Default values if yaml file doesn't exist
-            print("Warning: gateway_info.yml not found, using default values")
-            self.r_o = [0.0, 0.0, 0.0]
-            self.gateway_orientation = [0.0, 0.0, 0.0, 1.0]
+        with open(yaml_file_path, 'r') as file:
+            data = yaml.safe_load(file)
+        self.r_o = data['gateway1']['position']
+        self.gateway_orientation = data['gateway1']['orientation']
     
         
 
@@ -66,12 +59,11 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        dataset = dataset_dict["mimo"]
-        
-        # MIMO dataset: train and test are already separated in .mat files
-        # No need for index files or splitting
-        self.train_set = dataset(self.datadir, is_train=True)
-        self.test_set = dataset(self.datadir, is_train=False)
+        train_mat_path = os.path.join(self.datadir, "train_magnitude.mat")
+        test_mat_path = os.path.join(self.datadir, "test_magnitude.mat")
+
+        self.train_set = MatMagnitudeDataset(train_mat_path)
+        self.test_set = MatMagnitudeDataset(test_mat_path)
 
  
         

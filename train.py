@@ -12,8 +12,7 @@ import datetime
 import os
 import torch
 import numpy as np
-from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel, DeformModel
@@ -42,32 +41,52 @@ try:
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
+from utils.logger import logger_config 
 from scipy.spatial.transform import Rotation
-from utils.data_painter import paint_spectrum_compare 
+from utils.data_painter import paint_magnitude_compare 
 from skimage.metrics import structural_similarity as ssim
 
 
 
 
 
-def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
-    datadir = 'data'
+    datadir = os.path.abspath("./dataset/asu_campus_3p5")
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    tb_writer = prepare_output_and_logger(dataset,current_time)
+    logdir = os.path.join(dataset.model_path, "logs")
+    log_filename = "logger.log"
     devices = torch.device('cuda')
+    log_savepath = os.path.join(logdir, log_filename)
+    os.makedirs(logdir,exist_ok=True)
+    logger = logger_config(log_savepath=log_savepath, logging_name='gsss')
+    logger.info("datadir:%s, logdir:%s", datadir, logdir)
     
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset,current_time)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    gaussians.gaussian_init()
-    deform = DeformModel()
-    deform.train_setting(opt)
     
     scene = Scene(dataset, gaussians)
+    gaussians.gaussian_init(vertices_path=os.path.join(scene.datadir, "vertices.mat"))
+    
     scene.dataset_init()
+    opt.iterations = len(scene.train_set) * scene.num_epochs
+
+    if not testing_iterations:
+        testing_iterations = [opt.iterations]
+    if not saving_iterations:
+        saving_iterations = [opt.iterations]
+    if not checkpoint_iterations:
+        checkpoint_iterations = [opt.iterations]
+    for iter_list in (testing_iterations, saving_iterations, checkpoint_iterations):
+        if opt.iterations not in iter_list:
+            iter_list.append(opt.iterations)
+
+    deform = DeformModel()
+    deform.train_setting(opt)
     
     gaussians.training_setup(opt)
     if checkpoint:
@@ -85,18 +104,13 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
 
     viewpoint_stack = None
     
+    def compute_ssim_np(pred_np, gt_np):
+        data_range = float(max(pred_np.max() - pred_np.min(), gt_np.max() - gt_np.min(), 1e-6))
+        win = 3 if min(pred_np.shape[-2:]) < 7 else 7  # handle 4x16 shapes
+        return ssim(pred_np, gt_np, data_range=data_range, win_size=win, channel_axis=None)
+    
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
-    
-    # Get dataset size for progress bar
-    dataset_size = len(scene.train_set)
-    # Set iterations to dataset_size (1 epoch)
-    opt.iterations = dataset_size
-    total_epochs = 1
-    
-    # Use opt.iterations as testing_iterations
-    testing_iterations = [opt.iterations]
-    
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
@@ -127,20 +141,19 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
 
         # Pick a random Camera
         try:
-            channels_beam, rx_pos = next(scene.train_iter_dataset)
+            spectrum, tx_pos = next(scene.train_iter_dataset)
 
         except:
             scene.dataset_init()
-            channels_beam, rx_pos = next(scene.train_iter_dataset)
+            spectrum, tx_pos = next(scene.train_iter_dataset)
 
         r_o = scene.r_o
         gateway_orientation = scene.gateway_orientation 
         R = torch.from_numpy(Rotation.from_quat(gateway_orientation).as_matrix()).float()
-        # Remove batch dimension since batch_size=1
-        rx_pos = rx_pos.squeeze(0).cuda()
-        viewpoint_cam = generate_new_cam(R, r_o)
+        tx_pos = tx_pos.cuda()
+        viewpoint_cam = generate_new_cam(R, r_o, image_height=scene.output_height, image_width=scene.output_width)
         N = gaussians.get_xyz.shape[0]
-        time_input = rx_pos.expand(N, -1)
+        time_input = tx_pos.expand(N, -1)
         d_xyz, d_rotation, d_scaling, d_signal = deform.step(gaussians.get_xyz.detach(), time_input)
 
 
@@ -156,39 +169,21 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
         #     print("radii.shape:", radii.shape)
         #     print('radii:', radii)
         
-        channel, height, width = image.shape
-        # Reshape render output to match channels_beam shape (2, 4, 16)
-        # image is (2, height, width), we need (2, 4, 16)
-        # Assuming height*width >= 64, we take the first 64 elements and reshape
-        total_elements = height * width
-        if total_elements >= 64:
-            # Flatten and take first 64 elements, then reshape to (2, 4, 16)
-            pred_channels_beam = image.reshape(2, -1)[:, :64].reshape(2, 4, 16)
+        pred_magnitude = image[0, :scene.output_height, :scene.output_width]
+        if tb_writer:
+            tb_writer.add_image('pred-magnitude', pred_magnitude.unsqueeze(0), iteration)
+        
+        # Loss
+        gt_image = spectrum.cuda().squeeze(0)
+        Ll1 = l1_loss(pred_magnitude, gt_image)
+        if FUSED_SSIM_AVAILABLE:
+            ssim_value = fused_ssim(pred_magnitude.unsqueeze(0).unsqueeze(0), gt_image.unsqueeze(0).unsqueeze(0))
         else:
-            # If not enough elements, pad with zeros
-            pred_channels_beam = torch.zeros(2, 4, 16, device=image.device, dtype=image.dtype)
-            pred_channels_beam[:, :height, :width] = image
-        
-        # For visualization, show first channel
-        render_image_show = pred_channels_beam[0].unsqueeze(0).cuda()
-        tb_writer.add_image('render-img', render_image_show, iteration)
-        
-        # Loss: Real MSE + Imaginary MSE
-        # channels_beam is (batch_size, 2, 4, 16) where [:, 0] is real and [:, 1] is imaginary
-        # Remove batch dimension since batch_size=1
-        gt_channels_beam = channels_beam.squeeze(0).cuda()  # (2, 4, 16)
-        
-        # Separate real and imaginary parts
-        pred_real = pred_channels_beam[0]  # (4, 16)
-        pred_imag = pred_channels_beam[1]  # (4, 16)
-        gt_real = gt_channels_beam[0]  # (4, 16)
-        gt_imag = gt_channels_beam[1]  # (4, 16)
-        
-        # MSE for real and imaginary parts
-        mse_real = torch.mean((pred_real - gt_real) ** 2)
-        mse_imag = torch.mean((pred_imag - gt_imag) ** 2)
-        
-        loss = mse_real + mse_imag
+            pred_np = pred_magnitude.detach().cpu().numpy()
+            gt_np = gt_image.detach().cpu().numpy()
+            ssim_value = compute_ssim_np(pred_np, gt_np)
+
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -205,33 +200,20 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                # Calculate current epoch and position in dataset
-                current_epoch = (iteration - 1) // dataset_size + 1
-                position_in_epoch = ((iteration - 1) % dataset_size) + 1
-                progress_bar.set_postfix({
-                    "Epoch": f"{current_epoch}/{total_epochs}",
-                    "Sample": f"{position_in_epoch}/{dataset_size}",
-                    "Loss": f"{ema_loss_for_log:.{7}f}",
-                    "MSE Real": f"{mse_real.item():.{7}f}",
-                    "MSE Imag": f"{mse_imag.item():.{7}f}"
-                })
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
 
             # Log and save
             
-            tb_writer.add_scalar('train_loss', loss.item(), iteration)
-            tb_writer.add_scalar('train_loss/mse_real', mse_real.item(), iteration)
-            tb_writer.add_scalar('train_loss/mse_imag', mse_imag.item(), iteration)
+            tb_writer.add_scalar('train_loss', loss.item(), iteration)            
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
             # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                # Deform model also saved
-                deform.save_weights(scene.model_path, iteration)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -267,103 +249,51 @@ def training(dataset, opt, pipe, saving_iterations, checkpoint_iterations, check
             if iteration in testing_iterations:
                 torch.cuda.empty_cache()
                 
-                print("Start evaluation")
-                # Save test results to output folder
-                iteration_path = os.path.join(scene.model_path, 'pred_channels_beam', str(iteration))
+                logger.info("Start evaluation")
+                iteration_path = os.path.join(dataset.model_path, 'pred_magnitude', f'iter_{iteration}')
                 os.makedirs(iteration_path, exist_ok=True) 
-                full_path = os.path.join(scene.model_path, str(iteration))
-                os.makedirs(full_path, exist_ok=True)
-                
-                # Randomly select 50 test samples
-                test_dataset_size = len(scene.test_set)
-                num_test_samples = min(50, test_dataset_size)
-                test_indices = np.random.choice(test_dataset_size, num_test_samples, replace=False)
-                print(f"Testing on {num_test_samples} randomly selected samples out of {test_dataset_size} total test samples")
-                
+                metrics_path = os.path.join(dataset.model_path, f'iter_{iteration}')
+                os.makedirs(metrics_path, exist_ok=True)
                 save_img_idx = 0
-                all_mse_real = []
-                all_mse_imag = []
-                for idx in test_indices:
-                    # Get test sample by index
-                    test_channels_beam, test_rx_pos = scene.test_set[idx]
-                    test_channels_beam = test_channels_beam.unsqueeze(0)  # Add batch dimension
-                    test_rx_pos = test_rx_pos.unsqueeze(0)  # Add batch dimension 
+                all_ssim = []
+                total_eval = min(len(scene.test_set), 50)
+                selected_indices = torch.randperm(len(scene.test_set))[:total_eval].tolist()
+                for idx in selected_indices: 
                     
+                    test_input, test_label = scene.test_set[int(idx)]
                     
                     r_o = scene.r_o
                     gateway_orientation = scene.gateway_orientation 
                     R = torch.from_numpy(Rotation.from_quat(gateway_orientation).as_matrix()).float()
-                    # Remove batch dimension since batch_size=1
-                    rx_pos = test_rx_pos.squeeze(0).cuda()
-                    viewpoint_cam = generate_new_cam(R, r_o)
+                    tx_pos = test_label.cuda()
+                    viewpoint_cam = generate_new_cam(R, r_o, image_height=scene.output_height, image_width=scene.output_width)
                     N = gaussians.get_xyz.shape[0]
-                    time_input = rx_pos.expand(N, -1)
+                    time_input = tx_pos.expand(N, -1)
                     d_xyz, d_rotation, d_scaling, d_signal = deform.step(gaussians.get_xyz.detach(), time_input)
-                    
-                    
-            
+    
+                    render_pkg = render(viewpoint_cam, gaussians, pipe, background,d_xyz, d_rotation, d_scaling, d_signal)
 
-                    render_pkg = render(viewpoint_cam, gaussians, pipe, bg,d_xyz, d_rotation, d_scaling, d_signal)
+                    pred_magnitude = render_pkg["render"][0, :scene.output_height, :scene.output_width]
 
-                    image = render_pkg["render"]
-                    channel, height, width = image.shape
+                    ## save predicted spectrum
+                    pred_spectrum = pred_magnitude.detach().cpu().numpy()
+                    gt_spectrum = test_input.detach().cpu().numpy()
+ 
                     
-                    # Reshape render output to match channels_beam shape (2, 4, 16)
-                    total_elements = height * width
-                    if total_elements >= 64:
-                        pred_channels_beam = image.reshape(2, -1)[:, :64].reshape(2, 4, 16)
-                    else:
-                        pred_channels_beam = torch.zeros(2, 4, 16, device=image.device, dtype=image.dtype)
-                        pred_channels_beam[:, :height, :width] = image
-
-                    # Convert to numpy for evaluation
-                    pred_channels_beam_np = pred_channels_beam.detach().cpu().numpy()
-                    gt_channels_beam_np = test_channels_beam.squeeze(0).detach().cpu().numpy()
-                    
-                    # Calculate MSE for real and imaginary parts
-                    pred_real = pred_channels_beam_np[0]
-                    pred_imag = pred_channels_beam_np[1]
-                    gt_real = gt_channels_beam_np[0]
-                    gt_imag = gt_channels_beam_np[1]
-                    
-                    mse_real = np.mean((pred_real - gt_real) ** 2)
-                    mse_imag = np.mean((pred_imag - gt_imag) ** 2)
-                    
-                    all_mse_real.append(mse_real)
-                    all_mse_imag.append(mse_imag)
-                    
-                    print(
-                        "Sample {:d} (idx {:d}), MSE Real = {:.6f}; MSE Imag = {:.6f}".format(save_img_idx, idx, mse_real, mse_imag))
-                    
-                    # Convert to complex arrays (4, 16) complex64
-                    pred_channels_beam_complex = pred_real + 1j * pred_imag
-                    
-                    # Get original gt_channels_beam directly from test_normalized.mat to ensure exact match
-                    import scipy.io
-                    test_mat_path = os.path.join(scene.datadir, 'test_normalized.mat')
-                    test_mat_data = scipy.io.loadmat(test_mat_path)
-                    gt_channels_beam_complex = test_mat_data['channels_beam'][idx].astype(np.complex64)
-                    
-                    # Save as .mat file
-                    scipy.io.savemat(os.path.join(iteration_path, f'{save_img_idx}.mat'),
-                                    {'pred_channels_beam': pred_channels_beam_complex.astype(np.complex64),
-                                     'gt_channels_beam': gt_channels_beam_complex})
-                    
-                    print("Mean MSE Real: {:.6f}, Mean MSE Imag: {:.6f}".format(
-                        np.mean(all_mse_real), np.mean(all_mse_imag)))
+                    pixel_error = np.mean(abs(pred_spectrum - gt_spectrum))
+                    ssim_i = compute_ssim_np(pred_spectrum, gt_spectrum)
+                    logger.info(
+                        "Spectrum {:d}, Mean pixel error = {:.6f}; SSIM = {:.6f}".format(save_img_idx, pixel_error,
+                                                                                        ssim_i))
+                    paint_magnitude_compare(pred_spectrum, gt_spectrum,
+                                        save_path=os.path.join(iteration_path,
+                                                                f'{save_img_idx}.png'))
+                    all_ssim.append(float(ssim_i))
+                    logger.info("Median SSIM is {:.6f}".format(np.median(all_ssim)))
                     save_img_idx += 1
-                    np.savetxt(os.path.join(full_path, 'all_mse_real.txt'), all_mse_real, fmt='%.6f')
-                    np.savetxt(os.path.join(full_path, 'all_mse_imag.txt'), all_mse_imag, fmt='%.6f')
+                np.savetxt(os.path.join(metrics_path, 'all_ssim.txt'), all_ssim, fmt='%.4f')
 
                 torch.cuda.empty_cache() 
-
-    # 학습 완료 후 최종 모델 저장
-    print("\n[FINAL] Saving final model")
-    scene.save(opt.iterations)
-    deform.save_weights(scene.model_path, opt.iterations)
-    # 최종 checkpoint도 저장
-    torch.save((gaussians.capture(), opt.iterations), scene.model_path + "/chkpnt_final.pth")
-    print("Final model saved to: {}".format(scene.model_path))
 
 
 
@@ -373,7 +303,7 @@ def prepare_output_and_logger(args,time):
             unique_str=os.getenv('OAR_JOB_ID')
         else:
             unique_str = str(uuid.uuid4())
-        args.model_path = os.path.join("./output/", time)
+        args.model_path = os.path.join("./outputs/", time)
         
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
@@ -439,16 +369,16 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6074)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000,60000,200000,300000,600000,1200000])
+    parser.add_argument("--test_iterations", nargs="*", type=int, default=[])
+    parser.add_argument("--save_iterations", nargs="*", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7000, 30000, 60000, 200000, 300000, 600000,1200000])
+    parser.add_argument("--checkpoint_iterations", nargs="*", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument('--gpu', type=int, default=0)
     
     args = parser.parse_args(sys.argv[1:])
     
-    args.save_iterations.append(args.iterations)
     torch.cuda.set_device(args.gpu)
     
     print("Optimizing " + args.model_path)
@@ -460,7 +390,7 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")
