@@ -39,7 +39,7 @@ class Scene:
         self.cameras_extent = 2
         self.output_height = 4
         self.output_width = 16
-        self.num_epochs = 6
+        self.num_epochs = 2
         
         yaml_file_path = os.path.join(self.datadir, 'gateway_info.yml')
         with open(yaml_file_path, 'r') as file:
