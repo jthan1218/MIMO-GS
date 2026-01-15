@@ -1,4 +1,7 @@
 outputs/
 dataset/city_94_monterrey_3p5/
 dataset/city_7_sandiego_28/
-dataset/asu_campus_3p5_8/
+dataset/city_7_sandiego_28_channel/
+# dataset/asu_campus_3p5_8/
+dataset/asu_campus_3p5_scaled/
+dataset/asu_campus_3p5_channel/

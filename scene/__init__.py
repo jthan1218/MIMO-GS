@@ -35,11 +35,11 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.batch_size = 1
-        self.datadir = os.path.abspath("./dataset/asu_campus_3p5")
+        self.datadir = os.path.abspath("./dataset/asu_campus_3p5_scaled")
         self.cameras_extent = 2
         self.output_height = 4
         self.output_width = 16
-        self.num_epochs = 2
+        self.num_epochs = 25
         
         yaml_file_path = os.path.join(self.datadir, 'gateway_info.yml')
         with open(yaml_file_path, 'r') as file:

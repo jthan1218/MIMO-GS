@@ -55,7 +55,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
-    datadir = os.path.abspath("./dataset/asu_campus_3p5")
+    datadir = os.path.abspath("./dataset/asu_campus_3p5_scaled")
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     tb_writer = prepare_output_and_logger(dataset,current_time)
     logdir = os.path.join(dataset.model_path, "logs")
@@ -70,7 +70,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     
     scene = Scene(dataset, gaussians)
-    gaussians.gaussian_init(vertices_path=os.path.join(scene.datadir, "vertices.mat"))
+    # gaussians.gaussian_init(vertices_path=os.path.join(scene.datadir, "vertices.mat"))
+    gaussians.gaussian_init()
     
     scene.dataset_init()
     opt.iterations = len(scene.train_set) * scene.num_epochs
@@ -98,11 +99,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
-
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
-    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-
-    viewpoint_stack = None
     
     def compute_ssim_np(pred_np, gt_np):
         data_range = float(max(pred_np.max() - pred_np.min(), gt_np.max() - gt_np.min(), 1e-6))
@@ -110,7 +106,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         return ssim(pred_np, gt_np, data_range=data_range, win_size=win, channel_axis=None)
     
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
@@ -137,7 +132,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
         if iteration % 1000 == 0:
-            print("nums of gaussians:", gaussians.get_xyz.shape[0])
+            # print("nums of gaussians:", gaussians.get_xyz.shape[0])
+            print("nums of gaussians: {}, Avg Opacity: {:.4f}".format(gaussians.get_xyz.shape[0], gaussians.get_opacity.mean().item()))
 
         # Pick a random Camera
         try:
@@ -185,11 +181,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
-        # Depth regularization
-        Ll1depth_pure = 0.0
-        
-        Ll1depth = 0
-
         loss.backward()
 
         iter_end.record()
@@ -197,10 +188,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
