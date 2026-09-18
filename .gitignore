@@ -1,0 +1,15 @@
+
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+mimogs_rasterizer/build/
+
+.ipynb_checkpoints/
+
+.claude/
+
+*.so
+*.egg-info/
+.DS_Store

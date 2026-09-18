@@ -1,0 +1,23 @@
+name: mimogs
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools
+  - wheel
+  - pytorch=1.13.1
+  - pytorch-cuda=11.6
+  - numpy<2
+  - scipy
+  - pandas
+  - pyyaml
+  - plyfile
+  - tqdm
+  - imageio
+  - matplotlib
+  - ninja
+  - pytest

@@ -1,0 +1,157 @@
+from argparse import ArgumentParser, Namespace
+import os
+import sys
+
+class GroupParams:
+    pass
+
+class ParamGroup:
+    def __init__(self, parser: ArgumentParser, name: str, fill_none: bool = False):
+        group = parser.add_argument_group(name)
+        for key, value in vars(self).items():
+            shorthand = False
+            if key.startswith("_"):
+                shorthand = True
+                key = key[1:]
+
+            t = type(value)
+            value = value if not fill_none else None
+
+            if shorthand:
+                if t == bool:
+                    group.add_argument(
+                        "--" + key, "-" + key[0], default=value, action="store_true"
+                    )
+                else:
+                    group.add_argument(
+                        "--" + key, "-" + key[0], default=value, type=t
+                    )
+
+            else:
+                if t == bool:
+                    group.add_argument(
+                        "--" + key, default=value, action="store_true"
+                    )
+                else:
+                    group.add_argument(
+                        "--" + key, default=value, type=t
+                    )
+
+    def extract(self, args):
+        group = GroupParams()
+        for k, v in vars(args).items():
+            if k in vars(self) or ("_" + k) in vars(self):
+                setattr(group, k, v)
+        return group
+
+
+class ModelParams(ParamGroup):
+    """
+    MIMOGS model/data level arguments
+    """
+
+    def __init__(self, parser: ArgumentParser, sentinel: bool = False):
+        self._source_path = "./dataset/asu_campus_16by256_lt"
+        self._model_path = ""
+        self.data_device = "cuda"
+        self.eval = False
+
+        # Array shape overrides, (horizontal, vertical) per side.  0 means the
+        # shape is derived from the beam count found in the dataset, which is
+        # the square factorization.  Set these only for a non-square UPA.
+        self.rx_shape_h = 0
+        self.rx_shape_v = 0
+        self.tx_shape_h = 0
+        self.tx_shape_v = 0
+
+        self.init_mode = "random"
+        self.vertices_path = ""
+        self.max_active_rx_beams = 8
+        self.max_active_tx_beams = 8
+        self.renormalize_local_beam_weights = True
+
+        # Renderer/training settings. Integers are used instead of bools
+        # so both 0 and 1 can be supplied through the existing ParamGroup.
+        self.batch_size = 8
+        self.num_workers = 0
+        self.num_epochs = 100
+        self.target_gaussians = 25_000
+        self.use_cuda_rasterizer = 1
+        self.use_amp = 0
+
+        # Tie the Tx-side 3D covariance to the Rx-side one. With 1 the two
+        # anchors share a single (scaling, rotation) pair, which reproduces the
+        # previous shared-covariance behaviour exactly. With 0 each anchor
+        # carries its own covariance and the two ends of a primitive are tied
+        # only through the shared per-primitive gain.
+        self.tie_covariance = 0
+
+        super().__init__(parser, "Model Parameters", sentinel)
+
+    def extract(self, args):
+        g = super().extract(args)
+        if getattr(g, "source_path", ""):
+            g.source_path = os.path.abspath(g.source_path)
+        if getattr(g, "model_path", ""):
+            g.model_path = os.path.abspath(g.model_path)
+        if getattr(g, "vertices_path", ""):
+            g.vertices_path = os.path.abspath(g.vertices_path)
+        return g
+
+class OptimizationParams(ParamGroup):
+    def __init__(self, parser: ArgumentParser):
+        self.iterations = 0
+        self.position_lr_init = 0.003
+        self.position_lr_final = 0.000016
+        self.position_lr_delay_mult = 0.01
+        self.position_lr_max_steps = 0
+
+        self.opacity_lr = 0.025
+        self.scaling_lr = 0.003
+        self.rotation_lr = 0.0005
+        self.optimizer_type = "default"
+
+        self.opacity_lr_final = 0.003
+
+        self.dynamic_gain_lr = 0.001
+        self.dynamic_gain_lr_final = 0.0001
+
+        # Anchor-tie regularizer weight: pulls the per-Gaussian Tx anchor
+        # (_xyz_tx) toward the Rx anchor (_xyz). With a large default the
+        # model behaves as a single-anchor (LoS / single-bounce) renderer;
+        # the optimizer is free to separate the two anchors where the data
+        # demands it (multi-bounce paths).
+        self.lambda_anchor = 0
+
+        # Opt in explicitly; existing commands retain the fixed population.
+        self.enable_densification = 0
+        self.densify_grad_threshold = 5e-4
+        self.densify_from_iter = 1000
+        self.densify_until_iter = 15000
+        self.densification_interval = 1000
+
+        super().__init__(parser, "Optimization Parameters")
+
+def get_combined_args(parser: ArgumentParser):
+
+    args_cmdline = parser.parse_args(sys.argv[1:])
+    cfgfile_string = "Namespace()"
+
+    try:
+        cfgfilepath = os.path.join(args_cmdline.model_path, "cfg_args")
+        print("Looking for config file in", cfgfilepath)
+        with open(cfgfilepath, "r", encoding="utf-8") as cfg_file:
+            print("Config file found:", cfgfilepath)
+            cfgfile_string = cfg_file.read()
+    except (TypeError, FileNotFoundError, AttributeError):
+        print("Config file not found.")
+        pass
+
+    args_cfgfile = eval(cfgfile_string, {"Namespace": Namespace}, {})
+    merged_dict = vars(args_cfgfile).copy()
+
+    for k, v in vars(args_cmdline).items():
+        if v is not None:
+            merged_dict[k] = v
+
+    return Namespace(**merged_dict)

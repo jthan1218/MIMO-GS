@@ -1,0 +1,17 @@
+dataset_name: asu_campus
+bs1:
+  position: [1.003330, 0.628592, 0.132971]
+  orientation: [0.0, 0.0, 0.0]
+# BS raw position (m)   : [166.0, 104.0, 22.0]   (raw DeepMIMO frame, NO rotation: phi = +0.0 deg)
+# pos_scale (m)         : 165.449005  = max|coordinate| over the kept users (train.mat and test.mat agree)
+# normalized position   : raw / pos_scale  -- x is slightly > 1 by design,
+#                         every kept UE lies in FRONT of the BS (x < bs_x)
+# filter                : scenario asu_campus_3p5, tx set BS, rx sets pooled ['rx_grid'],
+#                         STRIDE 1 (no decimation, native 1.00 m grid), keep
+#                         the RECTANGLE 40 <= x < 166 m AND y >= 80 m (no distance-to-BS
+#                         test; X_MAX == bs_x = 166.0 m, so every kept UE is in front of
+#                         the +x boresight), then drop maps whose
+#                         peak < 1e-06 x the region's global peak (3.53033e-14).
+#                         Split 80/20 with default_rng(0).
+# arrays                : rx 4x4 = 16 beams, tx 16x16 = 256 beams -> magnitude (N, 16, 256)
+# global peak           : 3.530327174e-08  = the region's raw max, normalized to 1.0
