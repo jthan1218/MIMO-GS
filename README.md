@@ -1,6 +1,6 @@
 # Rendering Spatial MIMO Channel Scenes: A 3D Gaussian Splatting Approach
 
-This repository implements MIMO Gaussian splatting (MIMO-GS) to learn a spatial channel scene from channel observations and render joint receive–transmit beam pair power maps at user locations. It includes scene training, a PyTorch renderer, an optional CUDA rasterizer, and evaluation on held-out locations.
+This repository implements MIMO Gaussian splatting (MIMO-GS), which learns a channel scene from channel observations and renders the joint transmit and receive beam pair power map at user locations. It contains the training code, the renderer with an optional CUDA rasterizer, and evaluation on held-out locations.
 
 **Abstract**
 
@@ -59,7 +59,7 @@ Common options are:
 | `--max_active_rx_beams` / `--max_active_tx_beams` | `8` / `8` | Retained beams per primitive on each side. |
 | `--use_cuda_rasterizer` | `1` | Request the CUDA rasterizer; use `0` for the PyTorch path. |
 
-Training saves `model.pth`, `run_args.txt`, and `point_cloud/point_cloud.ply`. It also saves 50 test comparison figures as `pred_compare/00.png` through `49.png` (or fewer if the test set is smaller), using dB power with a shared 50 dB display range per comparison, and prints full-test-set NMSE metrics.
+Training writes `model.pth`, `run_args.txt`, and `point_cloud/point_cloud.ply` to the output directory, together with test comparison figures under `pred_compare/`, and prints NMSE metrics on the full test set.
 
 ## Pretrained scene
 
